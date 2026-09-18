@@ -139,17 +139,22 @@ export class JevBrowser {
 
   async snapshot() {
     const main = this.page.mainFrame();
-    const frames = [main, ...main.childFrames().filter(f => !f.isDetached())];
-    let start = 0; const elements = []; let base; this.frames = new Map();
+    // page.frames() is the whole tree, not just direct children: Apps Script and other
+    // double-sandboxed apps put the real document in a grandchild frame.
+    const frames = [main, ...this.page.frames().filter(f => f !== main && !f.isDetached())];
+    let start = 0; const elements = []; const texts = []; let base; this.frames = new Map();
     for (const [n, f] of frames.entries()) {
       let r;
       try { r = await f.evaluate(ENUMERATE, { start, frame: n || undefined }); } catch { continue; }
       if (n === 0) base = r;
-      else if (!r.elements.length) continue;
+      // Each frame reports only what is visible inside its own viewport, so a hidden or
+      // zero-sized frame contributes nothing and a sandboxed app contributes its real text.
+      if (r.text) texts.push(r.text);
+      if (n !== 0 && !r.elements.length) continue;
       for (const e of r.elements) this.frames.set(e.i, f);
       elements.push(...r.elements); start = r.next;
     }
-    const s = { url: base?.url ?? this.page.url(), title: base?.title ?? "", text: base?.text ?? "", metrics: { ...base?.metrics, elements: elements.length }, elements };
+    const s = { url: base?.url ?? this.page.url(), title: base?.title ?? "", text: texts.join(" ") || base?.text || "", metrics: { ...base?.metrics, elements: elements.length }, elements };
     const rep = repeatedElements(elements); if (rep) s.repeated_elements = rep;
     if (base?.dialogs?.length) s.dialogs = base.dialogs;
     this.lastPage = s;

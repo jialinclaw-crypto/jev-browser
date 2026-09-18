@@ -25,6 +25,7 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title>
 <div aria-hidden="true"><button>Behind modal</button></div>
 <my-el></my-el>
 <iframe srcdoc="<input id='inner' placeholder='Inside frame'>" width="300" height="80"></iframe>
+<iframe srcdoc="<iframe srcdoc='<p>Deep frame text</p><button>Deep button</button>' width=200 height=60></iframe>" width="300" height="80"></iframe>
 <a href="/x">Delete</a><a href="/y">Delete</a>
 <p class="far">Offscreen paragraph text</p>
 <script>customElements.define("my-el", class extends HTMLElement { constructor() { super(); this.attachShadow({ mode: "open" }).innerHTML = "<button>Shadow button</button>"; } });</script>
@@ -75,6 +76,13 @@ test("pointer-cursor divs, images, shadow DOM and iframes are reachable", () => 
   assert.ok(find(e => e.text === "Shadow button"), "shadow DOM");
   const inner = find(e => e.placeholder === "Inside frame");
   assert.ok(inner?.frame, "iframe element carries its frame");
+});
+
+test("elements in nested (grandchild) frames are reachable", () => {
+  const deep = find(e => e.text === "Deep button");
+  assert.ok(deep, "depth-2 iframe element is enumerated");
+  assert.ok(deep.frame, "nested frame element carries its frame");
+  assert.match(page.text, /Deep frame text/, "nested frame text reaches visible text");
 });
 
 test("hidden and aria-hidden elements are excluded", () => {
