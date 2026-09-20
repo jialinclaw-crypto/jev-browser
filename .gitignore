@@ -6,3 +6,8 @@ bench/results/
 bench/tasks.local.mjs
 .profile/
 *.png
+
+# 常春點班的一次性腳本：含正式部署網址，這個 fork 是公開的，不可進版控。
+cc-login.cjs
+cc-render-check.cjs
+cc-shot.cjs
