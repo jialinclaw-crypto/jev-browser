@@ -440,3 +440,50 @@ test("pickCloser: plain close controls only, last one wins, never a navigating l
   assert.equal(pickCloser([E(1, { tag: "a", text: "Close", href: "/home?a=1" })], url), undefined);   // reloads the page
   assert.equal(pickCloser([E(1, { tag: "div[button]", text: "✕" })], url)?.i, 1);
 });
+
+test("downloads are saved to downloadsDir without overwriting; state is saved owner-only", async () => {
+  const { mkdtemp, readFile, stat: fstat, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const dir = await mkdtemp(`${tmpdir()}/jev-dl-`);
+  const b2 = await JevBrowser.launch({ browser, downloadsDir: `${dir}/files` });
+  await b2.page.setContent(`<a id="d" download="論文 1.pdf" href="data:application/pdf,%25PDF-1.4">get</a>`);
+  for (let k = 0; k < 2; k++) await b2.page.click("#d");
+  const files = await b2.downloaded();
+  assert.deepEqual(files.map(f => f.slice(dir.length)), ["/files/論文 1.pdf", "/files/論文 1 (2).pdf"]);
+  assert.equal(await readFile(files[0], "utf8"), "%PDF-1.4");
+  assert.ok(b2.events.some(e => e.startsWith("downloaded: ")));
+
+  await b2.context.addCookies([{ name: "sid", value: "abc", domain: "example.test", path: "/" }]);
+  const r = await b2.saveState(`${dir}/state/s.json`);
+  assert.equal(r.cookies, 1);
+  assert.equal((await fstat(`${dir}/state/s.json`)).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(await readFile(`${dir}/state/s.json`, "utf8")).cookies[0].name, "sid");
+  await b2.close();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("downloads: slow responses are waited for, popup tabs are closed, long names are shortened", async () => {
+  const { mkdtemp, rm, readdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const dir = await mkdtemp(`${tmpdir()}/jev-dl2-`);
+  const b2 = await JevBrowser.launch({ browser, downloadsDir: dir });
+  await b2.context.route("https://dl.test/**", async r => { await new Promise(res => setTimeout(res, 800)); await r.fulfill({ body: "x", headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${r.request().url().endsWith("long") ? "長".repeat(120) : "report"}.csv"` } }); });
+  await b2.page.setContent(`<a id="a" href="https://dl.test/a">a</a><a id="b" href="https://dl.test/b">b</a><a id="p" target="_blank" href="https://dl.test/long">p</a>`);
+  const main = b2.page;
+  try {
+  await b2.page.click("#a"); await b2.page.click("#b");
+  const files = await b2.downloaded();
+  assert.equal(files.length, 2);
+  await main.click("#p");
+  await new Promise(res => setTimeout(res, 300));
+  const all = await b2.downloaded();
+  assert.equal(all.length, 3);
+  assert.ok(Buffer.byteLength(all[2].split("/").pop()) <= 160);
+  assert.equal(b2.page, main);                        // the empty popup was closed and we are back
+  assert.equal(b2.context.pages().length, 1);
+  assert.equal((await readdir(dir)).length, 3);
+  } finally {
+    await b2.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

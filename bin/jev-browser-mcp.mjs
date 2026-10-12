@@ -5,17 +5,29 @@
 //
 // Env: TYPESAFE_API_KEY, JEV_BROWSER_HEADED=1,
 //      JEV_BROWSER_PROFILE=/dir (persistent profile, keeps logins), JEV_BROWSER_LOG=1 (rounds to stderr)
+//      JEV_BROWSER_STATE=/file.json (start from saved cookies/localStorage; browser_save_state writes it;
+//        lets a headless session reuse a login done once in a headed one, incl. session cookies)
+//      JEV_BROWSER_DOWNLOADS=/dir (save downloads there; otherwise they are discarded)
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { existsSync } from "node:fs";
 import { JevBrowser } from "../src/session.mjs";
 import { formatRead } from "../src/prune.mjs";
 
 // Holds the launch promise, not the session, so parallel tool calls share one browser.
 let session;
 function browser() {
-  session ??= JevBrowser.launch({ headed: process.env.JEV_BROWSER_HEADED === "1", highlight: process.env.JEV_BROWSER_HEADED === "1", userDataDir: process.env.JEV_BROWSER_PROFILE || undefined })
-    .catch(e => { session = undefined; throw e; });
+  if (session) return session;
+  const state = process.env.JEV_BROWSER_STATE, useState = !!state && existsSync(state);
+  if (useState && process.env.JEV_BROWSER_PROFILE) process.stderr.write("jev-browser: JEV_BROWSER_PROFILE is set, so JEV_BROWSER_STATE is not loaded\n");
+  session = JevBrowser.launch({ headed: process.env.JEV_BROWSER_HEADED === "1", highlight: process.env.JEV_BROWSER_HEADED === "1", userDataDir: process.env.JEV_BROWSER_PROFILE || undefined,
+    storageState: useState ? state : undefined, downloadsDir: process.env.JEV_BROWSER_DOWNLOADS || undefined })
+    .catch(e => {
+      session = undefined;
+      if (useState && !process.env.JEV_BROWSER_PROFILE) throw new Error(`could not start from the saved state ${state} (delete it, or sign in again and call browser_save_state): ${String(e?.message ?? e).split("\n")[0]}`);
+      throw e;
+    });
   return session;
 }
 async function closeSession() {
@@ -126,6 +138,22 @@ server.registerTool("browser_screenshot", {
   const buf = await (await browser()).screenshot({ fullPage: !!full_page });
   return { content: [{ type: "image", data: buf.toString("base64"), mimeType: "image/png" }] };
 }));
+
+server.registerTool("browser_save_state", {
+  title: "Save sign-in state",
+  description: "Save the session's cookies and localStorage to the file in JEV_BROWSER_STATE (owner-only), so a later session — e.g. a headless one — starts signed in. Use after the user has logged in.",
+  inputSchema: {},
+}, wrap(async () => {
+  const path = process.env.JEV_BROWSER_STATE;
+  if (!path) throw new Error("JEV_BROWSER_STATE is not set");
+  return text({ saved: path, ...(await (await browser()).saveState(path)) });
+}));
+
+server.registerTool("browser_downloads", {
+  title: "List downloads",
+  description: "Wait for downloads started so far to finish, then list the files saved in this session (JEV_BROWSER_DOWNLOADS).",
+  inputSchema: {},
+}, wrap(async () => text({ dir: process.env.JEV_BROWSER_DOWNLOADS ?? null, files: await (await browser()).downloaded() })));
 
 server.registerTool("browser_close", {
   title: "Close browser",

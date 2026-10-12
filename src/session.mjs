@@ -9,6 +9,9 @@
 // target, value. Pages with more than MAX_SINGLE elements go through two stages (group, then
 // element). Follow-up requests are made only when needed: a key to press, a drag destination,
 // an option to select, or a stricter "is it done" when the answers disagree.
+import { mkdir, writeFile, chmod, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { chromium } from "playwright";
 import { jev } from "./jev.mjs";
 import { ENUMERATE, EXTRACT_BLOCKS } from "./page-script.mjs";
@@ -65,7 +68,7 @@ export function repeatsBlock(seq, k, times) {
 export class JevBrowser {
   // userDataDir -> persistent profile (logins survive restarts); browser -> share one Chromium.
   // highlight -> outline each target with Jev's decision before acting (for watching a headed run).
-  static async launch({ headed = false, slowMo = 0, viewport = { width: 1280, height: 800 }, storageState, browser, userDataDir, highlight = false } = {}) {
+  static async launch({ headed = false, slowMo = 0, viewport = { width: 1280, height: 800 }, storageState, browser, userDataDir, downloadsDir, highlight = false } = {}) {
     let context, own = false;
     try {
     if (userDataDir) {
@@ -81,6 +84,7 @@ export class JevBrowser {
     }
     const b = new JevBrowser(browser, context, own);
     b.highlight = highlight;
+    b.downloadsDir = downloadsDir;
     b.page = context.pages()[0] ?? await context.newPage();
     return b;
   }
@@ -91,6 +95,7 @@ export class JevBrowser {
     this.shown = null;               // the page whose element numbers the caller last saw
     this.dialogPolicy = SAFE_DIALOGS;
     this.stats = { calls: 0, jev_ms: 0, tokens: 0 };
+    this.downloads = []; this.pendingDownloads = []; this.claimedPaths = new Set();
     context.addInitScript(() => {
       window.__jevMut = performance.now();
       const mo = new MutationObserver(recs => { if (recs.some(r => r.attributeName !== "data-jev-i")) window.__jevMut = performance.now(); });
@@ -106,6 +111,8 @@ export class JevBrowser {
   get page() { return this._page; }
   set page(p) {
     this._page = p;
+    // Playwright keeps downloads in a temp dir that is deleted with the context; save them.
+    p.on("download", d => { this.pendingDownloads.push(this.saveDownload(d)); });
     p.on("dialog", async d => {
       // confirm/prompt dialogs are often the site's own "are you sure?" before deleting or paying
       const accept = await Promise.resolve(this.dialogPolicy(d)).catch(() => false);
@@ -609,5 +616,53 @@ export class JevBrowser {
   }
 
   async screenshot({ path, fullPage = false } = {}) { return this.page.screenshot({ path, fullPage }); }
+  async saveDownload(d) {
+    let name = d.suggestedFilename().replace(/[\/\\:\0]/g, "_") || "download";
+    try {
+      if (!this.downloadsDir) { this.events.push(`download "${name}" not saved (no downloads dir)`); return null; }
+      await mkdir(this.downloadsDir, { recursive: true });
+      const dot = name.lastIndexOf(".");
+      let stem = dot > 0 ? name.slice(0, dot) : name; const ext = dot > 0 ? name.slice(dot, dot + 16) : "";
+      // macOS caps a file name at 255 bytes and Chromium does not truncate; keep room for " (n)"
+      while (Buffer.byteLength(stem) > 150) stem = [...stem].slice(0, -1).join("");
+      name = stem + ext;
+      // pick and claim the path with no await in between, so two same-named downloads never share one
+      let path = join(this.downloadsDir, name);
+      for (let n = 2; this.claimedPaths.has(path) || existsSync(path); n++) path = join(this.downloadsDir, `${stem} (${n})${ext}`);
+      this.claimedPaths.add(path);
+      await d.saveAs(path);
+      const failure = await d.failure();
+      if (failure) throw new Error(failure);
+      this.downloads.push(path); this.events.push(`downloaded: ${path}`);
+      return path;
+    } catch (e) { this.events.push(`download "${name}" failed: ${String(e?.message ?? e).slice(0, 120)}`); return null; }
+    finally {
+      // a target=_blank download leaves an empty popup behind that became the main tab (d.page()
+      // reports the opener, not the popup); close it and the close handler switches back
+      const cur = this._page;
+      if (cur && this.context.pages().length > 1 && /^(about:blank)?$/.test(cur.url()) && await cur.opener().catch(() => null)) await cur.close().catch(() => {});
+    }
+  }
+
+  // Let pending clicks settle, wait for every download that has started, then list the files
+  // saved in this session.
+  async downloaded() {
+    await this.settle({ max: 3000 }).catch(() => {});
+    for (let k = 0; k < 20 && this.pendingDownloads.length; k++) { await Promise.allSettled(this.pendingDownloads.splice(0)); await sleep(200); }
+    return [...this.downloads];
+  }
+
+  // Cookies + localStorage, so a later headless session can start signed in. Owner-only file,
+  // written to a temp file and renamed so a crash never leaves half a JSON behind.
+  async saveState(path) {
+    await mkdir(dirname(path), { recursive: true });
+    const state = await this.context.storageState();
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify(state), { mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+    return { cookies: state.cookies.length, origins: state.origins.length };
+  }
+
   async close() { await this.context.close().catch(() => {}); if (this.ownBrowser) await this.browser.close().catch(() => {}); }
 }
