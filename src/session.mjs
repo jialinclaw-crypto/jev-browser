@@ -68,14 +68,21 @@ export function repeatsBlock(seq, k, times) {
 export class JevBrowser {
   // userDataDir -> persistent profile (logins survive restarts); browser -> share one Chromium.
   // highlight -> outline each target with Jev's decision before acting (for watching a headed run).
-  static async launch({ headed = false, slowMo = 0, viewport = { width: 1280, height: 800 }, storageState, browser, userDataDir, downloadsDir, highlight = false } = {}) {
+  // trustSpki: base64 SHA-256 public-key hashes. A connection whose certificate chain contains one of
+  // these keys is accepted despite ANY certificate error (name, expiry, revocation, issuer), for any
+  // host. For a known misconfigured server (e.g. a library proxy whose *.example.edu certificate
+  // does not cover www.site.com.proxy.example.edu): pin its leaf key, never a CA's. Other keys are
+  // validated normally. Needs its own Chromium, so it cannot be combined with a shared `browser`.
+  static async launch({ headed = false, slowMo = 0, viewport = { width: 1280, height: 800 }, storageState, browser, userDataDir, downloadsDir, trustSpki = [], highlight = false } = {}) {
+    if (browser && trustSpki.length) throw new Error("trustSpki needs its own Chromium; it cannot be applied to a shared browser");
+    const args = trustSpki.length ? [`--ignore-certificate-errors-spki-list=${trustSpki.join(",")}`] : [];
     let context, own = false;
     try {
     if (userDataDir) {
-      context = await chromium.launchPersistentContext(userDataDir, { headless: !headed, slowMo, viewport });
+      context = await chromium.launchPersistentContext(userDataDir, { headless: !headed, slowMo, viewport, args });
     } else {
       own = !browser;
-      browser ??= await chromium.launch({ headless: !headed, slowMo });
+      browser ??= await chromium.launch({ headless: !headed, slowMo, args });
       context = await browser.newContext({ viewport, storageState });
     }
     } catch (e) {

@@ -165,6 +165,18 @@ and in a diff. Measured on a Wikipedia article (1,840 elements), a default snaps
 
 Env: `JEV_BROWSER_HEADED=1` shows the browser, `JEV_BROWSER_PROFILE=/dir` keeps a persistent
 profile (logins survive restarts), `JEV_BROWSER_LOG=1` prints per-round decisions to stderr.
+`JEV_BROWSER_STATE=/file.json` starts from saved cookies and localStorage, and `browser_save_state`
+writes them (owner-only). Sign in once in a headed session and later headless sessions start signed
+in, session cookies included. `JEV_BROWSER_DOWNLOADS=/dir` saves downloads there (`browser_downloads`
+lists them); otherwise they are discarded.
+
+`JEV_BROWSER_TRUST_SPKI=hash1,hash2` (base64 SHA-256 of a certificate's public key) makes Chromium
+accept any connection whose chain contains one of those keys. This ignores *every* certificate error
+on that connection (wrong name, expired, revoked, unknown issuer) for any host name. It is meant for a
+known, misconfigured server such as a library proxy whose `*.example.edu` certificate does not cover
+`www.site.com.proxy.example.edu`. Pin the server's own (leaf) key, never a CA's. Update the hash when
+the server's key changes, and remove it at once if that key may be compromised. Certificates with
+other keys are validated as usual.
 
 ### Library
 

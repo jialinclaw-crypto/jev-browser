@@ -487,3 +487,34 @@ test("downloads: slow responses are waited for, popup tabs are closed, long name
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("trustSpki accepts only the pinned certificate; others still fail validation", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { execFileSync } = await import("node:child_process");
+  const { createServer } = await import("node:https");
+  const { createHash, X509Certificate } = await import("node:crypto");
+  const dir = await mkdtemp(`${tmpdir()}/jev-cert-`);
+  // a self-signed certificate for "localhost": invalid to Chromium (unknown issuer)
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
+    "-keyout", `${dir}/k.pem`, "-out", `${dir}/c.pem`], { stdio: "ignore" });
+  const cert = await readFile(`${dir}/c.pem`), key = await readFile(`${dir}/k.pem`);
+  const spki = createHash("sha256").update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" })).digest("base64");
+  const server = createServer({ cert, key }, (_, res) => res.end("<title>pinned ok</title>"));
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  const url = `https://localhost:${server.address().port}/`;
+  const tryOpen = async trustSpki => {
+    const b2 = await JevBrowser.launch({ trustSpki });
+    try { await b2.page.goto(url, { timeout: 10000 }); return await b2.page.title(); }
+    catch (e) { return String(e.message).match(/net::\S+/)?.[0] ?? "error"; }
+    finally { await b2.close(); }
+  };
+  try {
+    assert.equal(await tryOpen([spki]), "pinned ok");
+    assert.match(await tryOpen([]), /ERR_CERT/);
+    assert.match(await tryOpen(["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]), /ERR_CERT/);
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

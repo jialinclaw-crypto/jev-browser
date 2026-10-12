@@ -8,12 +8,21 @@
 //      JEV_BROWSER_STATE=/file.json (start from saved cookies/localStorage; browser_save_state writes it;
 //        lets a headless session reuse a login done once in a headed one, incl. session cookies)
 //      JEV_BROWSER_DOWNLOADS=/dir (save downloads there; otherwise they are discarded)
+//      JEV_BROWSER_TRUST_SPKI=hash1,hash2 (a connection whose chain contains one of these public keys
+//        is accepted despite ANY certificate error, for any host; pin a misconfigured server's leaf
+//        key, never a CA's; other keys are validated normally. See README.)
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { existsSync } from "node:fs";
 import { JevBrowser } from "../src/session.mjs";
 import { formatRead } from "../src/prune.mjs";
+
+function spkiList() {
+  const list = (process.env.JEV_BROWSER_TRUST_SPKI || "").split(",").map(x => x.trim()).filter(Boolean);
+  for (const h of list) if (!/^[A-Za-z0-9+/]{43}=$/.test(h)) process.stderr.write(`jev-browser: JEV_BROWSER_TRUST_SPKI entry "${h}" is not a base64 SHA-256 hash\n`);
+  return list;
+}
 
 // Holds the launch promise, not the session, so parallel tool calls share one browser.
 let session;
@@ -22,7 +31,8 @@ function browser() {
   const state = process.env.JEV_BROWSER_STATE, useState = !!state && existsSync(state);
   if (useState && process.env.JEV_BROWSER_PROFILE) process.stderr.write("jev-browser: JEV_BROWSER_PROFILE is set, so JEV_BROWSER_STATE is not loaded\n");
   session = JevBrowser.launch({ headed: process.env.JEV_BROWSER_HEADED === "1", highlight: process.env.JEV_BROWSER_HEADED === "1", userDataDir: process.env.JEV_BROWSER_PROFILE || undefined,
-    storageState: useState ? state : undefined, downloadsDir: process.env.JEV_BROWSER_DOWNLOADS || undefined })
+    storageState: useState ? state : undefined, downloadsDir: process.env.JEV_BROWSER_DOWNLOADS || undefined,
+    trustSpki: spkiList() })
     .catch(e => {
       session = undefined;
       if (useState && !process.env.JEV_BROWSER_PROFILE) throw new Error(`could not start from the saved state ${state} (delete it, or sign in again and call browser_save_state): ${String(e?.message ?? e).split("\n")[0]}`);
